@@ -12,7 +12,6 @@
 #include <cmath>                                //log10()
 #include <fstream>                              //std::ifstream, std::ofstream
 #include <unordered_set>                        //std::unordered_set
-//#include <iterator>
 #include <arpa/inet.h>				//inet_ntop()
 #include <cstring>				//memcmp(), strncpy()
 #include <net/ethernet.h>			//struct ether_header, ETHERTYPE
@@ -289,16 +288,17 @@ class Httphdr : protected Header {
                 std::smatch m;
 
                 if(regex_search(str, m, pattern)) {
-                    for(size_t i = 0; i < m.size(); i++)
-                        printf("m[%d] : %s\n", static_cast<int>(i), m.str(i).c_str());
+                    //for(size_t i = 0; i < m.size(); i++)
+                        //printf("m[%d] : %s\n", static_cast<int>(i), m.str(i).c_str());
 
                 if(site.find(m.str(2).c_str())
                     != site.end()) {
                         puts("find!");
                         block_chk = true;
                         //http dump
-                        extern void dump(const u_char*, int);
-                        dump(packet, static_cast<int>(len));
+                        //extern void dump(const u_char*, int);
+                        //dump(packet, static_cast<int>(len));
+                        return;
                     }
                 }
             } else if(is_https) {
@@ -306,6 +306,7 @@ class Httphdr : protected Header {
                         != site.end()) {
                     puts("find!");
                     block_chk = true;
+                    return;
                 }
             }
             thread_lock = false;
@@ -495,16 +496,16 @@ int main(int argc, char* argv[]) {
     while ((res = pcap_next_ex(handle, &header, &packet)) >= 0) {
         if (res == 0) continue;
 
-        putchar('\n');
-        puts("--------------------------------------------");
+        //putchar('\n');
+        //puts("--------------------------------------------");
         auto ether(make_unique<Ethhdr>(&packet));
-        ether->print();
+        //ether->print();
         if(ether->getEthertype() == ETHERTYPE_IP) {
             auto ip(make_shared<Iphdr>(&packet));
-            ip->print();
+            //ip->print();
             if(ip->getIpproto() == IPPROTO_TCP) {
                 auto tcp(make_shared<Tcphdr>(ip));
-                tcp->print();
+                //tcp->print();
                 uint16_t sport = tcp->getThsport(), dport = tcp->getThdport();
                 if(sport == 80 || dport == 80 || sport == 443 || dport == 443) {
                     auto http(make_shared<Httphdr>(ip, tcp));
@@ -519,44 +520,66 @@ int main(int argc, char* argv[]) {
                     std::thread find{&Httphdr::find, http};
                     std::thread rst_thread([&pkt, &packet, &handle, &ip, &http]() {
                         int i{}, len{};
+                        bool flag;
 
                         if(http->Ishttp())
                             len = static_cast<int>(sizeof(ether_header) + ip->getIplen()
                                                                     - http->getHttplen());
                         else
                             len = static_cast<int>(sizeof(ether_header) + ip->getIplen());
-
+                        for(auto &iter : pkt) {
+                            if(len > MTU)   break;
+                            memcpy(const_cast<u_char *>(iter), packet,
+                                                static_cast<size_t>(len));
+                            auto rst_ether(make_unique<Ethhdr>(&(iter)));
+                            auto rst_ip(make_shared<Iphdr>(&(iter)));
+                            auto rst_tcp(make_shared<Tcphdr>(rst_ip));
+                            flag = i++ % 2;
+                            rst_ether->ether_build(flag);
+                            rst_ip->ip_build(flag);
+                            rst_tcp->tcp_build(flag);
+                        }
+                        /*
+                        std::list<const u_char *>::iterator pkt_end = pkt.end();
                         for(std::list<const u_char *>::iterator iter = pkt.begin();
-                                iter != pkt.end(); ++iter, i++) {
+                                iter != pkt_end; ++iter, i++) {
                             if(len > MTU)   break;
                             memcpy(const_cast<u_char *>(*iter), packet,
                                                 static_cast<size_t>(len));
                             auto rst_ether(make_unique<Ethhdr>(&(*iter)));
                             auto rst_ip(make_shared<Iphdr>(&(*iter)));
                             auto rst_tcp(make_shared<Tcphdr>(rst_ip));
-                            rst_ether->ether_build(i % 2);
-                            rst_ip->ip_build(i % 2);
-                            rst_tcp->tcp_build(i % 2);
+                            flag = i % 2;
+                            rst_ether->ether_build(flag);
+                            rst_ip->ip_build(flag);
+                            rst_tcp->tcp_build(flag);
                         }
+                        */
                         i = i ^ i;
 
                         while(block_chk == false && thread_lock);
                         if(block_chk) {
+                            for(auto &it : pkt)
+                                pcap_sendpacket(handle, it, len);
+                            /*
+                            std::list<const u_char *>::iterator pkt_end = pkt.end();
                             for(std::list<const u_char *>::iterator iter = pkt.begin();
-                                    iter != pkt.end(); ++iter, i++)
+                                    iter != pkt_end; ++iter, i++)
                                 pcap_sendpacket(handle, *iter, len);
+                            */
                             block_chk = false;
-                        } else {
-                            thread_lock = true;
                         }
+                        if(!thread_lock)
+                            thread_lock = true;
                     });
                     th_manager.push_back(std::move(find));
                     th_manager.push_back(std::move(rst_thread));
                     for(const std::thread &th : th_manager)
                         if(th.joinable())   const_cast<std::thread &>(th).join();
                     /* case 1 - using iterator
+                    std::vector<std::thread>::iterator th_end = th_manager.end();
                     for(std::vector<std::thread>::iterator it = th_manager.begin();
-                            it != th_manager.end(); ++it)
+                            it != th_end; ++it)
                         if(it->joinable())      it->join();
                     // case 2
                     //if(find.joinable())         find.join();
@@ -565,7 +588,7 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
-        puts("--------------------------------------------");
+        //puts("--------------------------------------------");
     }
 
     pcap_close(handle);
@@ -574,11 +597,10 @@ _end:
         free(it);
         it = nullptr;
     }
-
     /*
-    std::vector<void *>::iterator end = ptr_manager.end();
+    std::vector<void *>::iterator ptr_end = ptr_manager.end();
     for(std::vector<void *>::iterator iter = ptr_manager.begin();
-            iter != end; ++iter) {
+            iter != ptr_end; ++iter) {
         free(*iter);
         *iter = nullptr;
     }
